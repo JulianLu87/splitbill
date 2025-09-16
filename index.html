@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>簡易分帳器</title>
+<style>
+  :root { --gap: 12px; --pad: 14px; --radius: 12px; }
+  body { font-family: system-ui, -apple-system, "Helvetica Neue", Arial; margin: 0; background:#0f172a; color:#e5e7eb; }
+  header { padding: 20px var(--pad); background:#111827; position: sticky; top:0; z-index: 2; border-bottom:1px solid #1f2937;}
+  h1 { margin: 0; font-size: 20px; }
+  main { padding: 16px; display: grid; gap: var(--gap); max-width: 960px; margin: 0 auto; }
+  .card { background:#111827; border:1px solid #1f2937; border-radius: var(--radius); padding: var(--pad);}
+  .row { display:flex; flex-wrap:wrap; gap: var(--gap); align-items: center;}
+  .row > * { flex: 1 1 200px; }
+  label { font-size: 12px; color:#9ca3af; display:block; margin-bottom:6px; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%; padding: 10px; border-radius: 10px; border:1px solid #374151; background:#0b1220; color:#e5e7eb;
+  }
+  textarea { min-height: 80px; }
+  button {
+    padding: 10px 14px; border-radius: 10px; background:#2563eb; color:white; border: none; cursor:pointer;
+  }
+  button.secondary { background:#374151; }
+  button.danger { background:#b91c1c; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 10px; border-bottom:1px solid #1f2937; text-align: left; vertical-align: top; }
+  .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#1f2937; font-size:12px; }
+  .money { font-variant-numeric: tabular-nums; }
+  .flex { display:flex; gap:8px; align-items:center; flex-wrap: wrap;}
+  .chips { display:flex; gap:6px; flex-wrap: wrap;}
+  .totals { display:grid; gap:8px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  .ok { color:#10b981; } .warn { color:#f59e0b;} .bad { color:#f87171;}
+  footer { padding: 40px 16px; color:#6b7280; text-align:center; }
+  .tiny { font-size: 12px; color:#9ca3af;}
+</style>
+</head>
+<body>
+<header><h1>簡易分帳器</h1></header>
+<main>
+  <section class="card" id="peopleCard">
+    <h2>1) 參與者</h2>
+    <div class="row">
+      <div>
+        <label>名字（用逗號分隔，例如：A,B,C,D,E）</label>
+        <input id="peopleInput" type="text" placeholder="A,B,C,D,E" />
+      </div>
+      <div style="flex:0 0 auto">
+        <label>&nbsp;</label>
+        <button id="savePeople">套用</button>
+      </div>
+    </div>
+    <div class="tiny" id="peopleShow"></div>
+  </section>
+
+  <section class="card">
+    <h2>2) 新增消費</h2>
+    <div class="row">
+      <div>
+        <label>項目</label>
+        <input id="desc" type="text" placeholder="飲料 / 場地費..." />
+      </div>
+      <div>
+        <label>金額</label>
+        <input id="amount" type="number" min="0" step="1" inputmode="decimal" placeholder="0" />
+      </div>
+      <div>
+        <label>付款人</label>
+        <select id="payer"></select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>分攤對象（勾選要平分的人）</label>
+        <div id="participants" class="chips"></div>
+      </div>
+    </div>
+    <div class="row">
+      <div><button id="addExpense">＋新增一筆</button></div>
+      <div><button class="secondary" id="clearAll">清空全部</button></div>
+      <div style="flex:1"></div>
+      <div><button class="secondary" id="exportBtn">匯出資料</button></div>
+      <div><button class="secondary" id="importBtn">匯入資料</button></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3) 消費列表</h2>
+    <div class="tiny">點「✕」可刪除某筆。每筆會平均分攤到被勾選的人。</div>
+    <table id="expTable">
+      <thead>
+        <tr><th>項目</th><th>金額</th><th>付款人</th><th>分攤對象</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>4) 結果彙總</h2>
+    <div class="totals" id="totals"></div>
+  </section>
+
+  <section class="card">
+    <h2>5) 建議結清（最少筆數）</h2>
+    <div id="settlements"></div>
+  </section>
+
+  <section class="card" id="ioCard" style="display:none">
+    <h2>匯入/匯出</h2>
+    <div class="row">
+      <textarea id="ioArea" placeholder="這裡會顯示 JSON；貼上後按「套用匯入」"></textarea>
+    </div>
+    <div class="row">
+      <button id="ioApply">套用匯入</button>
+      <button class="secondary" id="ioClose">關閉</button>
+    </div>
+  </section>
+</main>
+
+<footer class="tiny">資料儲存在本機瀏覽器（LocalStorage）。</footer>
+
+<script>
+const storeKey = "simple-splitter-v1";
+let state = { people: ["A","B","C","D","E"], expenses: [] };
+
+function save() { localStorage.setItem(storeKey, JSON.stringify(state)); }
+function load() {
+  const raw = localStorage.getItem(storeKey);
+  if (raw) { try { state = JSON.parse(raw) } catch(e){} }
+}
+function el(id){ return document.getElementById(id); }
+
+function renderPeopleUI(){
+  el("peopleInput").value = state.people.join(",");
+  el("peopleShow").textContent = "目前參與者：" + state.people.join("、");
+  // payer select
+  const payer = el("payer");
+  payer.innerHTML = "";
+  state.people.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p; opt.textContent = p;
+    payer.appendChild(opt);
+  });
+  // participant chips (checkboxes)
+  const box = el("participants");
+  box.innerHTML = "";
+  state.people.forEach(p => {
+    const id = "chk_" + p;
+    const wrap = document.createElement("label");
+    wrap.className = "pill";
+    wrap.style.userSelect = "none";
+    wrap.style.cursor = "pointer";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.id = id; cb.value = p;
+    cb.style.marginRight = "6px";
+    wrap.appendChild(cb);
+    wrap.appendChild(document.createTextNode(p));
+    box.appendChild(wrap);
+  });
+}
+
+function getCheckedParticipants(){
+  return Array.from(el("participants").querySelectorAll("input[type=checkbox]:checked"))
+    .map(cb => cb.value);
+}
+
+function addExpense(desc, amount, payer, participants){
+  if (!desc) desc = "(未命名)";
+  amount = Number(amount);
+  if (!(amount > 0)) return alert("金額需大於 0");
+  if (!payer) return alert("請選擇付款人");
+  if (!participants || participants.length === 0) return alert("至少要有一位分攤對象");
+  state.expenses.push({ desc, amount, payer, participants });
+  save(); renderAll();
+}
+
+function deleteExpense(idx){
+  state.expenses.splice(idx, 1);
+  save(); renderAll();
+}
+
+function renderTable(){
+  const tb = el("expTable").querySelector("tbody");
+  tb.innerHTML = "";
+  state.expenses.forEach((e, i) => {
+    const tr = document.createElement("tr");
+    const pList = e.participants.join("、");
+    tr.innerHTML = `
+      <td>${escapeHtml(e.desc)}</td>
+      <td class="money">$${e.amount.toFixed(0)}</td>
+      <td>${escapeHtml(e.payer)}</td>
+      <td>${escapeHtml(pList)}</td>
+      <td><button class="danger" data-del="${i}">✕</button></td>
+    `;
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll("button[data-del]").forEach(btn=>{
+    btn.addEventListener("click", (ev)=>{
+      deleteExpense(Number(btn.getAttribute("data-del")));
+    });
+  });
+}
+
+function computeTotals(){
+  // per person: paid, owed, net
+  const people = state.people;
+  const totals = {};
+  people.forEach(p => totals[p] = { paid:0, owed:0, net:0 });
+
+  state.expenses.forEach(e=>{
+    const share = e.amount / e.participants.length;
+    totals[e.payer].paid += e.amount;
+    e.participants.forEach(p=>{
+      totals[p].owed += share;
+    });
+  });
+  people.forEach(p=> totals[p].net = totals[p].paid - totals[p].owed);
+  return totals;
+}
+
+function renderTotals(){
+  const totals = computeTotals();
+  const box = el("totals");
+  box.innerHTML = "";
+  state.people.forEach(p=>{
+    const t = totals[p];
+    const netCls = t.net > 1e-6 ? "ok" : (t.net < -1e-6 ? "bad" : "");
+    const div = document.createElement("div");
+    div.className = "card";
+    div.innerHTML = `
+      <div style="font-weight:600; margin-bottom:6px">${escapeHtml(p)}</div>
+      <div class="tiny">已付</div>
+      <div class="money">$${t.paid.toFixed(0)}</div>
+      <div class="tiny" style="margin-top:6px">應付</div>
+      <div class="money">$${t.owed.toFixed(0)}</div>
+      <div class="tiny" style="margin-top:6px">淨額（正=應收 / 負=應付）</div>
+      <div class="money ${netCls}">$${t.net.toFixed(0)}</div>
+    `;
+    box.appendChild(div);
+  });
+}
+
+function settleGreedy(){
+  // produce transfers: [{from, to, amount}]
+  const totals = computeTotals();
+  const debtors = [], creditors = [];
+  Object.entries(totals).forEach(([p, t])=>{
+    const v = round2(t.net);
+    if (v < 0) debtors.push({ name:p, amt: -v }); // needs to pay
+    else if (v > 0) creditors.push({ name:p, amt: v }); // needs to receive
+  });
+  // sort largest first for fewer transactions
+  debtors.sort((a,b)=>b.amt-a.amt);
+  creditors.sort((a,b)=>b.amt-a.amt);
+
+  const transfers = [];
+  let i=0, j=0;
+  while (i<debtors.length && j<creditors.length){
+    const d = debtors[i], c = creditors[j];
+    const pay = round2(Math.min(d.amt, c.amt));
+    if (pay > 0){
+      transfers.push({ from:d.name, to:c.name, amount: pay });
+      d.amt = round2(d.amt - pay);
+      c.amt = round2(c.amt - pay);
+    }
+    if (d.amt <= 1e-6) i++;
+    if (c.amt <= 1e-6) j++;
+  }
+  return transfers;
+}
+
+function renderSettlements(){
+  const box = el("settlements");
+  const transfers = settleGreedy();
+  if (transfers.length === 0){
+    box.innerHTML = `<div class="tiny">大家已經平衡了，無需轉帳。</div>`;
+    return;
+  }
+  const ul = document.createElement("ul");
+  ul.style.margin = "0"; ul.style.paddingLeft = "18px";
+  transfers.forEach(t=>{
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="money">${escapeHtml(t.from)}</span> → <span class="money">${escapeHtml(t.to)}</span>：<b class="money">$${t.amount.toFixed(0)}</b>`;
+    ul.appendChild(li);
+  });
+  box.innerHTML = "";
+  box.appendChild(ul);
+}
+
+function renderAll(){
+  renderPeopleUI();
+  renderTable();
+  renderTotals();
+  renderSettlements();
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+function round2(x){ return Math.round((x+Number.EPSILON)*100)/100; }
+
+function presetDemo(){
+  // 範例：A 幫 B/C/D 買飲料 300；B 先付 A/C/D/E 場地 1000
+  state.people = ["A","B","C","D","E"];
+  state.expenses = [
+    { desc:"飲料", amount:300, payer:"A", participants:["B","C","D"] },
+    { desc:"場地費", amount:1000, payer:"B", participants:["A","C","D","E"] }
+  ];
+  save(); renderAll();
+}
+
+function attachEvents(){
+  el("savePeople").addEventListener("click", ()=>{
+    const raw = el("peopleInput").value.trim();
+    const names = raw.split(",").map(s=>s.trim()).filter(Boolean);
+    if (names.length < 1) return alert("至少要有一位參與者");
+    // 去重
+    const uniq = Array.from(new Set(names));
+    state.people = uniq;
+    // 清空已存在且不在名單內的參與者資料
+    state.expenses.forEach(e=>{
+      e.participants = e.participants.filter(p=>uniq.includes(p));
+      if (!uniq.includes(e.payer)) e.payer = uniq[0] || "";
+    });
+    save(); renderAll();
+  });
+  el("addExpense").addEventListener("click", ()=>{
+    const desc = el("desc").value.trim();
+    const amount = el("amount").value;
+    const payer = el("payer").value;
+    const parts = getCheckedParticipants();
+    addExpense(desc, amount, payer, parts);
+    // reset inputs
+    el("desc").value = ""; el("amount").value = "";
+    el("participants").querySelectorAll("input[type=checkbox]").forEach(cb=>cb.checked=false);
+  });
+  el("clearAll").addEventListener("click", ()=>{
+    if (confirm("確定清空所有資料？")) { state.expenses = []; save(); renderAll(); }
+  });
+  el("exportBtn").addEventListener("click", ()=>{
+    el("ioCard").style.display="block";
+    el("ioArea").value = JSON.stringify(state, null, 2);
+  });
+  el("importBtn").addEventListener("click", ()=>{
+    el("ioCard").style.display="block";
+    el("ioArea").value = "";
+  });
+  el("ioApply").addEventListener("click", ()=>{
+    try {
+      const obj = JSON.parse(el("ioArea").value);
+      if (!obj.people || !obj.expenses) throw new Error("格式不正確");
+      state = obj; save(); renderAll(); el("ioCard").style.display="none";
+    } catch(e){ alert("匯入失敗："+e.message); }
+  });
+  el("ioClose").addEventListener("click", ()=>{ el("ioCard").style.display="none"; });
+}
+
+load();
+if (!state.expenses.length) presetDemo();
+attachEvents();
+renderAll();
+</script>
+</body>
+</html>
